@@ -83,3 +83,27 @@ static int manage_send_rate(struct akwbs_connection *connection, ssize_t *bytes_
 
   return AKWBS_SUCCESS;
 }
+
+/*!
+ * Verify if this connection has reached the timeout limit.
+ *
+ * \param connection connection object.
+ *
+ * \return AKWBS_SUCCESS if it did NOT REACH the limit.
+ *         AKWBS_ERROR if it REACHED the limit.
+ */
+static int get_timeout(struct akwbs_connection *connection)
+{
+  struct timeval diff_time = {0, 0};
+  struct timeval current_time = {0, 0};
+
+
+  gettimeofday(&current_time, NULL);
+
+  timersub(&current_time, &connection->last_activity, &diff_time);
+
+  if (diff_time.tv_sec > AKWBS_TIMEOUT_SECONDS)
+    return AKWBS_ERROR;
+
+  return AKWBS_SUCCESS;
+}
