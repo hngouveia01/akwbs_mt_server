@@ -179,3 +179,28 @@ static int send_data_to_socket(struct akwbs_connection *connection)
 
   return AKWBS_SUCCESS;
 }
+
+static void make_real_file_path(char *root_path, char *file_name, char *real_path)
+{
+  char *index = root_path;
+  int i = 0;
+
+
+  while (*index != '\0')
+  {
+    real_path[i] = *index;
+    i++;
+    index++;
+  }
+
+  index = file_name;
+
+  while (*index != '\0')
+  {
+    real_path[i] = *index;
+    i++;
+    index++;
+  }
+
+  real_path[i] = '\0';
+}
