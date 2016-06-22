@@ -204,3 +204,145 @@ static void make_real_file_path(char *root_path, char *file_name, char *real_pat
 
   real_path[i] = '\0';
 }
+
+/*!
+ * \brief Decrease the number of references that a file
+ *        has.
+ * \param connection connection containing the information
+ *        about the file that is being written or reading.
+ * \return AKWBS_ERROR on error.
+ * \return AKWBS_SUCCESS if the number of references was
+ *         increased  or reached zero.
+ */
+static int decrease_file_stat_reference(struct akwbs_connection *connection)
+{
+  struct stat stat_buf;
+  struct akwbs_file_stat *result = NULL;
+  struct akwbs_file_stat key_to_search;
+
+
+  if (fstat(connection->file_descriptor, &stat_buf) == AKWBS_ERROR)
+    return AKWBS_ERROR;
+
+  if (connection->connection_state != AKWBS_CONNECTION_CLOSED)
+    return AKWBS_ERROR;
+
+  bzero(&key_to_search, sizeof(struct akwbs_file_stat));
+
+  key_to_search.inode_number = stat_buf.st_ino;
+
+  result = (struct akwbs_file_stat *) tfind(&key_to_search,
+                                            &connection->daemon_ref->tree_opened_files,
+                                            akwbs_compare_file_stat);
+
+  if (result == NULL)
+    return AKWBS_ERROR;
+
+  (*((struct akwbs_file_stat **)result))->number_of_references--;
+
+  if ((*((struct akwbs_file_stat **)result))->number_of_references == 0)
+  {
+    struct akwbs_file_stat *to_be_freed = NULL;
+
+
+    close((*((struct akwbs_file_stat **)result))->file_descriptor);
+    to_be_freed = tdelete(result,
+                  &connection->daemon_ref->tree_opened_files,
+                  akwbs_compare_file_stat);
+
+    free(to_be_freed);
+
+    return AKWBS_SUCCESS;
+  }
+
+  return AKWBS_SUCCESS;
+}
+
+/*!
+ * \brief Create a leaf in the binary tree representing
+ *        a reference and status about a file.
+ * \param connection connection that is requesting operation
+ *        on file.
+ * \return AKWBS_ERROR on error.
+ * \return AKWBS_SUCCESS if a reference already exists or
+ *         it has been created.
+ */
+static int create_file_stat(struct akwbs_connection *connection)
+{
+  char real_path[PATH_MAX];
+  struct stat stat_buf;
+  struct akwbs_file_stat key_to_search;
+  struct akwbs_file_stat *search_result = NULL;
+  struct akwbs_file_stat *file_stat_to_insert = NULL;
+  struct akwbs_file_stat *insert_result = NULL;
+
+
+  make_real_file_path(connection->daemon_ref->root_path,
+                      connection->file_name,
+                      real_path);
+
+  if (stat(real_path, &stat_buf) == AKWBS_ERROR)
+    return AKWBS_ERROR;
+
+  key_to_search.inode_number         = stat_buf.st_ino;
+  key_to_search.file_descriptor      = -1;
+  key_to_search.number_of_references = 0;
+
+  search_result = (struct akwbs_file_stat *) tfind(&key_to_search,
+                                                   &connection->daemon_ref->tree_opened_files,
+                                                   akwbs_compare_file_stat);
+
+  if (search_result != NULL)
+  {
+    (* (struct akwbs_file_stat **) search_result)->number_of_references++;
+    connection->file_descriptor = (* (struct akwbs_file_stat **)search_result)->file_descriptor;
+    connection->file_total_offset = stat_buf.st_size;
+    return AKWBS_SUCCESS;
+  }
+
+  file_stat_to_insert = (struct akwbs_file_stat *) malloc(sizeof(struct akwbs_file_stat));
+
+  if (file_stat_to_insert == NULL)
+    return AKWBS_ERROR;
+
+  file_stat_to_insert->inode_number = key_to_search.inode_number;
+  file_stat_to_insert->number_of_references = 1;
+  file_stat_to_insert->file_descriptor = open(real_path, O_RDONLY | O_NONBLOCK);
+
+  if (file_stat_to_insert->file_descriptor == AKWBS_ERROR)
+    goto free_and_fail;
+
+  insert_result = tsearch((void *) file_stat_to_insert,
+                          &connection->daemon_ref->tree_opened_files,
+                          akwbs_compare_file_stat);
+
+  if ((* (struct akwbs_file_stat **) insert_result) != file_stat_to_insert)
+    goto free_and_fail;
+
+  connection->file_descriptor   = (* (struct akwbs_file_stat **)insert_result)->file_descriptor;
+  connection->file_total_offset = stat_buf.st_size;
+
+  return AKWBS_SUCCESS;
+
+free_and_fail:
+  free(file_stat_to_insert);
+  return AKWBS_ERROR;
+
+}
+
+/* Decides if we should create or update references about files. */
+static int manage_file_stat_tree(struct akwbs_connection *connection)
+{
+  if (connection->file_descriptor != AKWBS_ERROR)
+  {
+    if (decrease_file_stat_reference(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+  }
+  else
+  {
+    if (create_file_stat(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+  }
+
+  return AKWBS_SUCCESS;
+}
