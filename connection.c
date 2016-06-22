@@ -492,3 +492,74 @@ static int do_handle_request(struct akwbs_connection *connection)
 
   return AKWBS_SUCCESS;
 }
+
+/*!
+ * This function tries to find header's delimiters. Header lines are splitted
+ * into multiple lines by \r\n (aka CRLF), so when we find this, it indicates
+ * that we have a header line. This line is parsed and information extracted.
+ * As soon as we find the \r\n\r\n (aka CRLFCRLF), we indicate that situation
+ * to the caller of this function.
+ *
+ * \param connection the connection containing the buffer.
+ *
+ * \return AKWBS_REACHED_HEADER_END if we find the end of the header.
+ *         AKWBS_NOT_A_RELEVANT_EVENT if we do not find any of the flags that
+ *         we are looking for.
+ *         AKWBS_ERROR if this header is malformed.
+ */
+static int check_end_of_header(struct akwbs_connection *connection)
+{
+  char *initial_address = ring_buffer_read_address(&connection->buffer);
+  size_t total_bytes_in_buffer = ring_buffer_count_bytes(&connection->buffer);
+  size_t bytes_read = 0;
+  char *variable_position = NULL;
+
+
+  for (variable_position = initial_address;
+       ((bytes_read != total_bytes_in_buffer)
+        && (bytes_read < AKWBS_SIZE_HEADER_TOO_BIG));
+       bytes_read++, variable_position++)
+  {
+    switch (connection->header_state)
+    {
+      case AKWBS_HEADER_INITIAL:
+        if (*variable_position == '\r')
+          connection->header_state = AKWBS_HEADER_FIRST_CARRIAGE_RETURN;
+        break;
+      case AKWBS_HEADER_FIRST_CARRIAGE_RETURN:
+        if (*variable_position == '\n')
+        {
+          connection->header_state = AKWBS_HEADER_FIRST_LINEFEED;
+          if (connection->end_of_first_header_line == NULL)
+            connection->end_of_first_header_line = variable_position;
+        }
+        else
+          connection->header_state = AKWBS_HEADER_INITIAL;
+        break;
+      case AKWBS_HEADER_FIRST_LINEFEED:
+        if (*variable_position == '\r')
+          connection->header_state = AKWBS_HEADER_LAST_CARRIAGE_RETURN;
+        else
+          connection->header_state = AKWBS_HEADER_INITIAL;
+        break;
+      case AKWBS_HEADER_LAST_CARRIAGE_RETURN:
+        if (*variable_position == '\n')
+        {
+          connection->header_state = AKWBS_HEADER_LAST_LINEFEED;
+          connection->end_of_header = ++variable_position;
+          return AKWBS_SUCCESS;
+        }
+        else
+          connection->header_state = AKWBS_HEADER_INITIAL;
+        break;
+      default:
+        connection->header_state = AKWBS_HEADER_INITIAL;
+    }
+  }
+
+  if ((bytes_read >= AKWBS_SIZE_HEADER_TOO_BIG)
+      && (connection->header_state != AKWBS_HEADER_LAST_LINEFEED))
+    return AKWBS_ERROR;
+
+  return AKWBS_YES;
+}
