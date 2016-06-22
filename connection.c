@@ -400,3 +400,95 @@ static int open_resource(struct akwbs_connection *connection)
 
   return AKWBS_SUCCESS;
 }
+
+/*!
+ * Prepare I/O message for an I/O request.
+ *
+ * \param connection connection requesting this I/O.
+ *
+ * \return AKWBS_SUCCESS on success preparing the message.
+ *         AKWBS_ERROR on error while preparing the message.
+ */
+static int prepare_io_request(struct akwbs_connection *connection)
+{
+  switch (connection->has_request_pending)
+  {
+  case AKWBS_NO:
+    switch (connection->io_type)
+    {
+    case AKWBS_IO_GET_TYPE:
+      connection->pending_io_msg.address = ring_buffer_write_address(&connection->buffer);
+      connection->pending_io_msg.bytes   = ring_buffer_count_free_bytes(&connection->buffer);
+      break;
+    case AKWBS_IO_PUT_TYPE:
+      connection->pending_io_msg.address = ring_buffer_read_address(&connection->buffer);
+      connection->pending_io_msg.bytes   = ring_buffer_count_bytes(&connection->buffer);
+      break;
+    case AKWBS_IO_UNKNOWN_TYPE:
+      return AKWBS_ERROR;
+    }
+    connection->pending_io_msg.fd      = connection->file_descriptor;
+    connection->pending_io_msg.sd      = connection->client_socket;
+    connection->pending_io_msg.type    = connection->io_type;
+    connection->pending_io_msg.offset  = connection->file_cur_offset;
+    break;
+  case AKWBS_YES:
+    /* We will send the request that is pending and was previously prepared */
+    break;
+  default:
+    /* We must never get here. */
+    return AKWBS_ERROR;
+  }
+  return AKWBS_SUCCESS;
+}
+
+
+/*!
+ * Open the requested file and send the first request I/O of this connection.
+ *
+ * \param connection connection that made the request.
+ * \param daemon_p pointer to the daemon containing the socket of requests.
+ *
+ * \return AKWBS_SUCCESS on success. AKWBS_ERROR on error.
+ */
+static int do_handle_request(struct akwbs_connection *connection)
+{
+  if (connection->is_waiting_result == AKWBS_YES)
+    return AKWBS_SUCCESS;
+
+  if (connection->file_cur_offset == connection->file_total_offset)
+  {
+    if (connection->io_type == AKWBS_IO_PUT_TYPE)
+      send(connection->client_socket, AKWBS_HTTP_201, strlen(AKWBS_HTTP_201), 0);
+
+    close(connection->client_socket);
+    connection->connection_state = AKWBS_CONNECTION_CLOSED;
+    manage_file_stat_tree(connection);
+    FD_CLR(connection->client_socket, &connection->daemon_ref->master_read_set);
+    FD_CLR(connection->client_socket, &connection->daemon_ref->master_write_set);
+
+    return AKWBS_SUCCESS;
+  }
+
+  if (prepare_io_request(connection) == AKWBS_ERROR)
+    return AKWBS_ERROR;
+
+  if (akwbs_request_io_send_msg(&connection->pending_io_msg,
+                                connection->daemon_ref->request_io_queue[AKWBS_WRITE_INDEX])
+      == AKWBS_ERROR)
+    connection->has_request_pending = AKWBS_YES;
+  else
+  {
+    connection->has_request_pending = AKWBS_NO;
+    connection->is_waiting_result   = AKWBS_YES;
+  }
+
+  posix_fadvise(connection->file_descriptor,
+                connection->file_cur_offset,
+                connection->pending_io_msg.bytes,
+                POSIX_FADV_SEQUENTIAL);
+
+  pthread_cond_signal(&connection->daemon_ref->request_io_queue_cond);
+
+  return AKWBS_SUCCESS;
+}
