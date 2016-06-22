@@ -607,3 +607,77 @@ close_and_error:
   connection->connection_state = AKWBS_CONNECTION_CLOSED;
   return AKWBS_ERROR;
 }
+
+/*!
+ * Start the transmission for this connection.
+ *
+ * \param connection connection to handle.
+ * \param daemon_p pointer to the daemon structure containing data about the request I/O
+ *        queue.
+ *
+ * \return AKWBS_SUCCESS on success. AKWBS_ERROR on error.
+ */
+static int init_transmission(struct akwbs_connection *connection)
+{
+  struct stat s_stat;
+  int ret = AKWBS_ERROR;
+
+
+  if (open_resource(connection) == AKWBS_ERROR)
+  {
+    send(connection->client_socket, AKWBS_HTTP_404, strlen(AKWBS_HTTP_404), 0);
+    close(connection->client_socket);
+    connection->connection_state = AKWBS_CONNECTION_CLOSED;
+    FD_CLR(connection->client_socket, &connection->daemon_ref->master_read_set);
+    FD_CLR(connection->client_socket, &connection->daemon_ref->master_write_set);
+    return AKWBS_SUCCESS;
+  }
+
+  ret = do_handle_request(connection);
+
+  connection->connection_state = AKWBS_CONNECTION_ON_TRANSMISSION;
+
+  return ret;
+}
+
+
+/*!
+ * Handle the given connection on transmission state.
+ *
+ * \param connection connection on transmission state that will be handled.
+ *
+ * \return AKWBS_SUCCESS on success handling this connection.
+ *         AKWBS_ERROR on error serious error while handling this connection.
+ */
+static int handle_transmission(struct akwbs_connection *connection)
+{
+  if (connection == NULL)
+    return AKWBS_ERROR;
+
+  switch (connection->io_type)
+  {
+    case AKWBS_IO_GET_TYPE:
+      if (! FD_ISSET(connection->client_socket, &connection->daemon_ref->temp_write_set))
+        return AKWBS_SUCCESS;
+
+      if (send_data_to_socket(connection) == AKWBS_ERROR)
+      {
+        manage_file_stat_tree(connection);
+        close(connection->client_socket);
+        connection->connection_state = AKWBS_CONNECTION_CLOSED;
+
+        return AKWBS_ERROR;
+      }
+      do_handle_request(connection);
+      break;
+    case AKWBS_IO_PUT_TYPE:
+      if (FD_ISSET(connection->client_socket, &connection->daemon_ref->temp_read_set))
+        recv_data_from_socket(connection);
+      do_handle_request(connection);
+      break;
+    default:
+      /* If we got here, the genius programmer is missing something... I assume.        */
+      return AKWBS_ERROR;
+  }
+  return AKWBS_SUCCESS;
+}
