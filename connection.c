@@ -563,3 +563,47 @@ static int check_end_of_header(struct akwbs_connection *connection)
 
   return AKWBS_YES;
 }
+
+/*!
+ * Receive more data from the client connection.
+ *
+ * \param daemon_p pointer to the daemon structure.
+ * \param connection connection which will receive more data.
+ *
+ * \return AKWBS_SUCCESS on success receiving the data or if there is no space available
+ *         to hold any more data. This case in particular should never occur while
+ *         receiving the request header, because the buffer is greater than the limit of
+ *         bytes considered as header too big. Thus, this is taken as an error.
+ */
+static int recv_header(struct akwbs_connection *connection)
+{
+  if (! FD_ISSET(connection->client_socket, &connection->daemon_ref->temp_read_set))
+  {
+    if (get_timeout(connection) == AKWBS_ERROR)
+      goto close_and_error;
+    return AKWBS_SUCCESS;
+  }
+
+  if (recv_data_from_socket(connection) != AKWBS_SUCCESS)
+    goto close_and_error;
+
+  if (check_end_of_header(connection) == AKWBS_ERROR)
+    goto close_and_error;
+
+  if (connection->header_state == AKWBS_HEADER_LAST_LINEFEED)
+  {
+    connection->connection_state = AKWBS_CONNECTION_HEADERS_RECEIVED;
+    FD_CLR(connection->client_socket, &connection->daemon_ref->master_read_set);
+    FD_SET(connection->client_socket, &connection->daemon_ref->master_write_set);
+  }
+  else
+    connection->connection_state = AKWBS_CONNECTION_HEADERS_RECEIVING;
+
+  return AKWBS_SUCCESS;
+
+close_and_error:
+  send(connection->client_socket, AKWBS_HTTP_400, strlen(AKWBS_HTTP_400), 0);
+  close(connection->client_socket);
+  connection->connection_state = AKWBS_CONNECTION_CLOSED;
+  return AKWBS_ERROR;
+}
