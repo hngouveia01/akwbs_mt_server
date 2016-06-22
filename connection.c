@@ -681,3 +681,92 @@ static int handle_transmission(struct akwbs_connection *connection)
   }
   return AKWBS_SUCCESS;
 }
+
+/*!
+ * Create a new connection object.
+ *
+ * \param connection pointer to the location where the new connection will be stored.
+ *
+ * \return AKWBS_SUCCESS on success creating this new connection.
+ *         AKWBS_ERROR on error while creating new connection.
+ */
+int akwbs_create_new_connection(struct akwbs_connection **connection)
+{
+  if (*connection != NULL)
+    return AKWBS_ERROR;
+
+  *connection = calloc(1, sizeof(struct akwbs_connection));
+
+  if (*connection == NULL)
+    return AKWBS_ERROR;
+
+  (*connection)->file_descriptor = AKWBS_ERROR;
+
+  if (ring_buffer_create(&(*connection)->buffer, 15) == AKWBS_ERROR)
+    goto free_and_fail;
+
+  gettimeofday(&(*connection)->last_activity, NULL);
+
+  return AKWBS_SUCCESS;
+
+free_and_fail:
+  free(connection);
+  return AKWBS_ERROR;
+}
+
+
+/*!
+ * Handle the given connection depending on its state.
+ *
+ * \param connection connection to be handled.
+ *
+ * \return AKWBS_SUCCESS on success handling this connection.
+ *         AKWBS_ERROR on error while handling this connection (header too big).
+ */
+int akwbs_handle_connection(struct akwbs_connection *connection)
+{
+  switch (connection->connection_state)
+  {
+  case AKWBS_CONNECTION_INIT:
+  case AKWBS_CONNECTION_HEADERS_RECEIVING:
+    if (recv_header(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+    break;
+  case AKWBS_CONNECTION_HEADERS_RECEIVED:
+    if (akwbs_process_header(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+    break;
+  case AKWBS_CONNECTION_HEADERS_PROCESSED:
+    if (init_transmission(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+    break;
+  case AKWBS_CONNECTION_ON_TRANSMISSION:
+    if (handle_transmission(connection) == AKWBS_ERROR)
+    {
+      close(connection->client_socket);
+      manage_file_stat_tree(connection);
+      connection->connection_state = AKWBS_CONNECTION_CLOSED;
+    }
+    if (connection->connection_state != AKWBS_CONNECTION_CLOSED)
+      break;
+    /* INTENTIONAL FALL THROUGH! */
+  case AKWBS_CONNECTION_CLOSED:
+    DLL_remove(connection->daemon_ref->active_connections_head,
+               connection->daemon_ref->active_connections_tail,
+               connection);
+    DLL_insert(connection->daemon_ref->cleanup_connections_head,
+               connection->daemon_ref->cleanup_connections_tail,
+               connection);
+    connection->connection_state = AKWBS_CONNECTION_CLEANUP;
+      break;
+  case AKWBS_CONNECTION_CLEANUP:
+    /*
+     * We really should never get here, all clean up is done after passing through all
+     * active connections inside the list.
+     */
+    break;
+  default:
+    /* Nope, we don't even get here. But if we mysteriously end up here... your fault.  */
+    return AKWBS_ERROR;
+  }
+  return AKWBS_SUCCESS;
