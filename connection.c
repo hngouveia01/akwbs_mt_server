@@ -346,3 +346,57 @@ static int manage_file_stat_tree(struct akwbs_connection *connection)
 
   return AKWBS_SUCCESS;
 }
+
+static int open_file_for_writing(struct akwbs_connection *connection)
+{
+  char real_path[PATH_MAX];
+
+
+  make_real_file_path(connection->daemon_ref->root_path,
+                      connection->file_name,
+                      real_path);
+
+
+  connection->file_descriptor = open(basename(real_path),
+                                     O_CREAT | O_WRONLY | O_NONBLOCK,
+                                     S_IRWXU | S_IRWXG | S_IRWXO);
+
+  if (connection->file_descriptor == AKWBS_ERROR)
+    return AKWBS_ERROR;
+
+  return AKWBS_SUCCESS;
+}
+
+/*!
+ * Open the requested file for this connection.
+ *
+ * \param connection connection holding file name.
+ *
+ * \return AKWBS_SUCCESS on success opening the requested file.
+ *         AKWBS_ERROR on error while trying to open the requested file.
+ */
+static int open_resource(struct akwbs_connection *connection)
+{
+  struct stat stat_buf;
+
+
+  switch (connection->io_type)
+  {
+  case AKWBS_IO_GET_TYPE:
+    if (manage_file_stat_tree(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+    break;
+  case AKWBS_IO_PUT_TYPE:
+    if (open_file_for_writing(connection) == AKWBS_ERROR)
+      return AKWBS_ERROR;
+    break;
+  default:
+    /* AKWBS_IO_UNKNOWN_TYPE. Obviously an error. */
+    return AKWBS_ERROR;
+  }
+
+  if (connection->file_descriptor == AKWBS_ERROR)
+    return AKWBS_ERROR;
+
+  return AKWBS_SUCCESS;
+}
