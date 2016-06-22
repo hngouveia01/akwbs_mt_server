@@ -770,3 +770,4 @@ int akwbs_handle_connection(struct akwbs_connection *connection)
     return AKWBS_ERROR;
   }
   return AKWBS_SUCCESS;
+}
